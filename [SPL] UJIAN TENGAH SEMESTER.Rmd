@@ -1,0 +1,294 @@
+---
+title: "UTS"
+author: "Dinda Dwi Anugrah Pertiwi"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#PERSIAPAN
+
+rm(list = ls()); gc()
+
+#PACKAGE
+
+library(readxl)
+library(lmtest)
+library(MASS)
+library(tidyverse)
+library(car)
+library(caret)
+library(glmnet)
+library(corrplot)
+library(ggplot2)
+library(psych)
+library(broom)
+library(Metrics)
+library(randomForest)
+library(nlme)
+```
+
+```{r, echo=TRUE}
+#DATA
+
+data_gaji <- read_excel("C:/Users/dals/OneDrive - untirta.ac.id/KULIAH/Sem 5/SPL/DATA/data_Gaji_Bulanan.xlsx")
+```
+
+```{r, echo=TRUE}
+#PRE PROCESSING DATA
+
+#PEMERIKSAAN DATA
+
+head(data_gaji, 15)  #menampilkan 15 data
+is.na(data_gaji)     #melihat apakah ada data yg NA (kosong)
+summary(data_gaji)   #melihat ringkasan data
+glimpse(data_gaji)   #melihat struktur data
+
+#KORELASI NUMERIK
+var_numerik <- data_gaji %>%
+  select(where(is.numeric)) %>%
+  select(-Gaji_Bulanan)
+
+corrm <- cor(var_numerik)
+corrplot(corrm,
+         method = "color",
+         tl.cex = 0.7,
+         number.cex = 0.6,
+         title = "Matriks Korelasi Variabel Numerik",
+         mar = c(0,0,1,0))
+
+#SPLIT DATA 70:30
+set.seed(123)
+index_train <- createDataPartition(data_gaji$Gaji_Bulanan, p = 0.7, list = FALSE)
+data_train <- data_gaji[index_train, ]
+data_test <- data_gaji[-index_train, ]
+```
+
+```{r, echo=TRUE}
+#1.KONSTRUKSI DAN DIAGNOSIS MODEL AWAL
+
+
+#A. BANGUN MODEL LINIER DASAR
+model_A <- lm(Gaji_Bulanan ~ ., data = data_train)
+
+#MELIHAT RINGKASAN DATA
+summary(model_A)
+
+#B. PEMERIKSAAN DIAGNOSIK
+
+#1. STABILITAS DAN INDEPENDENSI FITUR
+nilai_vif <- vif(model_A)
+print(nilai_vif)
+
+#MELIHAT VARIABEL MANA YANG MEMILIKI NILAI > 10
+nilai_vif[nilai_vif > 10]
+
+#VISUALISASI
+ggplot(data_train, aes(x = Pengalaman_Kerja, y = Jumlah_Bawahan)) +
+  geom_point(alpha = 0.4, color = "steelblue") +
+  geom_smooth(method = "lm", se = FALSE, color = "navy") +
+  labs(title = "Korelasi antara Pengalaman Kerja dan Jumlah Bawahan")
+
+#2. PERILAKU SISAAN (ERROR)
+
+residual <- residuals(model_A)
+fit <- fitted(model_A)
+
+#VISUALISASI
+
+#RESIDUAL VS FITTED
+plot(fit, residual,
+     xlab = "Fitted Values",
+     ylab = "Residuals",
+     main = "residual vs Fitted Plot")
+abline(h = 0, col = "red")
+
+#PLOT QQ
+qqnorm(residual, col = "navy")
+qqline(residual, col = "red")
+
+#PERIKSA HOMOSKEDASTISITAS
+bptest(model_A)
+
+#PERIKSA AUTOKORELASI
+dwtest(model_A)
+
+#PERIKSA NORMALITAS
+ks.test(residual, "pnorm", mean = mean(residual), sd = sd(residual))
+```
+
+**Interpretasi STABILITAS DAN INDEPENDENSI FITUR :**
+
+1.  $VIF < 1$ : Tidak ada multikolinearitas.
+
+2.  $1 < VIF < 5$ : Multikolinearitas sedang (masih dapat diterima).
+
+3.  $5 < VIF < 10$ : Multikolinearitas tinggi.
+
+4.  $VIF > 10$ : Multikolinearitas sangat tinggi.
+
+dari hasil perhitungan VIF didapatkan variabel yang memiliki nilai VIF \> 10 yaitu, Pengalaman_Kerja (13.59945) dan Jumlah_Bawahan (20.48014) yang dimana kedua variabel tersebut memiliki multikolinearitas yang sangat tinggi, yang berarti kedua varaibel tersebut memiliki hubungan yang sangat kuat satu sama lain. Kondisi ini dapat mengakibatkan koefisien regresi menjadi tidak stabil dan interpretasi untuk setiap variabel `Gaji_Bulanan` menjadi tidak andal lagi dan dapat membuat nilai `Standar error` meningkat sehingga `P-Value` variabel bisa tidak signifikan lagi meskipun secara nyata berpengaruh.
+
+secara dasar, hal tersebut sangat wajar karena semakin lama seseorang bekerja, pada umumnya posisi atau jabatannya juga akan meningkatkan sehingga memiliki banyak bawahan.
+
+**Interpretasi PERILAKU SISAAN (ERROR) :**
+
+1.  **Breush-Pagan (Heteroskedastisitas)**
+
+    $H_0 :$ varians residual konstan
+
+    $H_1 :$ varians residual tidak konstan (terdapat heteroskedastisitas)
+
+hasil dari Breush-Pagan didapatkan nilai sebesar 39.255 dengan P-value = 0.006197. Yang dimana nilai P-Value tersebut \< 0.05, berarti $H_0$ ditolak (model A mengandung heteroskedastisitas) yang dimana hal tersebut berdampak koefisien regresi $\beta$ masih unbiased, yang berakibat uji T dan uji F dapat memberikan hasil yang menyesatkan (nilai p-value bisa terlalu kecil atau terlalu besar).
+
+2.  **Durbin Watson**
+
+    $H_0 :$ tidak ada autokorelasi residual
+
+    $H_1 :$ terdapat autokorelasi antar residual
+
+hasil dari Durbin Watson didapatkan nilai sebesar 0.31056 dengan P-value = 2.2e-16. Yang dimana nilai P-Value tersebut \< 0.05, berarti $H_0$ ditolak (model A terdapat autokorelasi antar residual) yang dimana hal tersebut berdampak residual saling berkorelasi dan standar error tidak valid.
+
+3.  **Kolmogorov-Smirnov**
+
+    $H_0 :$ residual berdistribusi normal
+
+    $H_1 :$ residual tidak berdistribusi normal
+
+hasil dari Kolmogorov Smirnov didapatkan nilai sebesar 0.032201 dengan P-value = 0.001409. Yang dimana nilai P-Value tersebut \< 0.05, berarti $H_0$ ditolak (residual model A tidak berdistribusi normal) yang berdampak ujit dan uji f menjadi tidak reliabel untuk individual.
+
+**Kesimpulan akhir :** Berdasarkan hasil uji diagnostik, model A menunjukkan adanya heteroskedastisitas, autokorelasi positif, dan sedikit penyimpangan dari normalitas residual. Hal tersebut menyimpulkan bahwa asumsi klasik regresi linear tidak sepenuhnya terpenuhi. Akibatnya, hasil uji-t dan uji-F pada model A tidak dapat sepenuhnya diandalkan, karena standar error yang digunakan dalam pengujian signifikan dapat bias.
+
+```{r, echo=TRUE}
+#2. METODE PEMODELAN ALTERNATIF
+
+#A. BANGUN MODEL PERBAIKAN
+
+#1. MEMPERBAIKI MULTIKOLINEARITAS
+variabel_x <- model.matrix(Gaji_Bulanan ~. -1, data = data_train)
+variabel_y <- data_train$Gaji_Bulanan
+
+var_x <- scale(variabel_x)
+
+model_ridge <- cv.glmnet(var_x, variabel_y, alpha = 0)
+
+model_B <- glmnet(var_x, variabel_y, alpha = 0, lambda = model_ridge$lambda.min)
+
+coef(model_B)
+
+#2. MEMPERBAIKI HETEROSKEDASTISITAS
+model_C <- lm(Gaji_Bulanan ~.,
+              data = data_train,
+              weights = 1/ (residual^2))
+
+summary(model_C)
+
+#3. MEMPERBAIKI AUTOKORELASI
+model_D <- gls(Gaji_Bulanan ~.,
+               data = data_train,
+               method = "REML")
+
+summary(model_D)
+```
+
+**JUSTIFIKASI :**
+
+1.  **PENANGANAN MULTIKOLINEARITAS**
+
+**Ridge Regression** dipilih dan digunakan sebagai `model_B` untuk mengatasi masalah multikolinearitas yang terdapat pada `model_A`. Pendekatan ridge ini menambahkan **penalti** terhadap besarnya koefisien, sehingga variabel yang memiliki korelasi yang tinggi tidak mendominasi model, dengan begitu model menjadi lebih stabil.
+
+2.  **PENANGANAN HETEROSKEDASTISITAS**
+
+**Weighted Least Squares** dipilih dan digunakan sebagai `model_C` untuk mengatasi masalah heteroskedastisitas yang terdapat pada `model_A`. Pendekatan ini memberikan **bobot terbalik terhadap residua**l model_A, sehingga observasi yang memiliki varian error yang besar memiliki pengaruh lebih kecil dalam proses estimasi. Dengan metode seperti ini, model dapat menghasilkan koefisien yang lebih efisien, standar error lebih akurat serta pengujian signifikasi (uji T dan uji F) kembali valid karena varian error konstan telah terpenuhi.
+
+3.  **PENANGANAN AUTOKORELASI**
+
+**Generalized Least Squares** dipilih dan digunakan sebagai `model_D` untuk mangatasi masalah autokorelasi yang terdapat pada `model_A`. Pendekatan ini berbeda dengan OLS, GLS **memperhitungkan adanya korelasi antar error** dan **menyesuaikan struktur variasn-kovariansnya menggunakan pendekatan REML.** Dengan demikian metode seperti ini menghasilkan estimasi koefisien yang lebih efisien serta uji signifikansi (uji T dan uji F) dapat lebih valid karena sudah memperbaiki bias akibat ketergantungan antar residual.
+
+```{r, echo=TRUE}
+#3. MEMBANDINGKAN MODEL A, B, C, D
+
+#PREDIKSI
+pred_A <- predict(model_A, newdata = data_test)
+pred_B <- predict(model_B, newx = scale(model.matrix(Gaji_Bulanan ~ . -1, data = data_test)))
+pred_C <- predict(model_C, newdata = data_test)
+pred_D <- predict(model_D, newdata = data_test)
+
+#RMSE
+rmse_A <- RMSE(data_test$Gaji_Bulanan, pred_A)
+rmse_B <- RMSE(data_test$Gaji_Bulanan, pred_B)
+rmse_C <- RMSE(data_test$Gaji_Bulanan, pred_C)
+rmse_D <- RMSE(data_test$Gaji_Bulanan, pred_D)
+
+#ADJUSTED R SQUARED
+adjsR2_A <- summary(model_A)$adj.r.squared
+adjsR2_B <- NA
+adjsR2_C <- summary(model_C)$adj.r.squared
+adjsR2_D <- NA
+
+#AIC
+aic_A <- AIC(model_A)
+aic_B <- NA
+aic_C <- AIC(model_C)
+aic_D <- AIC(model_D)
+
+#BIC
+bic_A <- BIC(model_A)
+bic_B <- NA
+bic_C <- BIC(model_C)
+bic_D <- BIC(model_D)
+
+tabel_perbandingan <- data.frame(
+  Model = c("A (OLS)", "B (Ridge)", "C (WLS)", "D (GLS)"),
+  RMSE = c(rmse_A, rmse_B, rmse_C, rmse_D),
+  Adjusted_R2 = c(adjsR2_A, adjsR2_B, adjsR2_C, adjsR2_D),
+  AIC = c(aic_A, aic_B, aic_C, aic_D),
+  BIC = c(bic_A, bic_B, bic_C, bic_D)
+)
+
+print(tabel_perbandingan)
+```
+
+**3.B MODEL TERBAIK / MODEL JUARA**
+
+Berdasarkan evaluasi perbandingan model A, B, C dan D. Model terbaik atau terjuara adalah `model_c` dengan menggunakan **Weighted Least Squares (WLS).** model tersebut juara karena memiliki:
+
+1.  nilai RMSE terendah
+
+2.  nilai Adjusted R-Squared tertinggi (mendekati 1)
+
+3.  nilai AIC terendah
+
+4.  nilai BIC terendah
+
+yang dimana menunjukkan prediksi paling akurat dibandingan model lainnya. selain itu, WLS juga menangani heteroskedastisitas sehingga koefisien menjadi lebih stabil dan sumsi model lebih terpenuhi.
+
+```{r, echo=TRUE}
+#4. INTERPRETASI DAN REKOMENDASI BISNIS
+
+#A. MENGINTERPRETASIKAN PENGARUH
+summary(model_C)
+```
+
+**INTERPRETASI :**
+
+berdasarkan `model_c` dengan menggunakan **Weighted Least Squares (WLS),** Variabel **`Tingkat_Pendidikan`** adalah variabel paling berpengaruh dalam menentukan Gaji_Bulanan karyawan di PT. Digital Cemerlang. Variabel Tingkat_Pendidikan tersebut terpilih sebagai variabel paling berpengaruh karena memiliki nilai estimate terbesar diantara variabel lainnya yaitu sebesar **2.505**. Yang dimana nilai tersebut menunjukkan bahwa setiap peningkatan satu tingkat pendidikan akan meningkatkan Gaji Bulanan sebesar 2.505 satuan. Hal tersebut sangat logis karena semakin tinggi tingkat pendidikan seseorang, pada umunya gaji bulanan yang didapatkan semakin besar, seperti:
+
+Budi lulusan S1 memiliki gaji bulanan sebesar 12.000.000 berbeda dengan Akbar lulusan SMK memiliki gaji bulanan sebesar 8.000.000
+
+**RINGKASAN EKSEKUTIF :**
+
+Analisis awal yang dilakukan oleh PT. Digital Cemerlang untuk memprediksi gaji karyawan berdasarkan 20 faktor sangat meragukan karena terdapatnya masalah asumsi model yang tidak terpenuhi. Hal tersebut menyebabkan prediksi gaji tidak cukup akurat dan variabel yang dianggap penting bisa jadi menyesatkan. Untuk mengatasi hal tersebut, perlu di lakukan pengecekan uji asumsi dan menggunakan metode **Weighted Least Squares (WLS),** yang dimana metode tersebut menyesuaikan pengaruh setiap data sesuai dengan variansinya dan memberikan bobot terbalik terhadap residual model. dengan begitu, model akhir dapat memberikan prediksi yang lebih akurat, koefisien yang stabil serta penilaian yang lebih realistis terhadap faktor-faktor yang mempengaruhi gaji bulanan.
+
+Berdasarkan wawasan dari model final (model C) tersebut, terdapat 2 rekomendasi strategis yang dapat ditindaklanjuti, yaitu:
+
+1.  **Meningkatkan program pengembangan pendidikan dan pelatihan karyawan**
+
+karena dengan tingkat pendidikan adalah faktor yang paling krusial dalam menentukan gaji karyawan, sehingga perlu adanya investasi dalam peningkatan kualitas pendidikan yang akan berdampak signifikan pada performa kepuasan karyawa.
+
+2.  **Mengoptimalkan kepemimpinan dan kemampuan manajerial**
+
+karena skor kepemimpinan juga dapat memiliki pengaruh yang nyata terhadap gaji bulanan, yang menunjukkan pentingnya pengembangan kemampuan kepemimpinan bagi karyawan yang memiliki potensi untuk menjabar posisi strategis.
